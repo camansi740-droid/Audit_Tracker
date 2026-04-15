@@ -85,22 +85,28 @@ export default function BackupRestore() {
     setPhase('previewing');
 
     try {
+      // First validate locally
       const text = await file.text();
       const parsed = JSON.parse(text);
-
-      // Validate basic structure
       if (!parsed.version || !Array.isArray(parsed.clients)) {
         throw new Error('Invalid backup file. Please upload a valid AuditFlow AI .json backup.');
       }
 
-      // Ask server for preview/summary
+      // Send as FormData file upload — use File object for proper multer parsing
+      const formData = new FormData();
+      const fileObj = new File([text], file.name, { type: 'application/json' });
+      formData.append('backupFile', fileObj);
+
       const res = await fetch('/api/backup/preview', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(parsed),
+        method: 'POST',
+        body:   formData,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Preview failed');
+
+      let data: any = {};
+      try { data = await res.json(); } catch {
+        throw new Error(`Server error (${res.status}): Failed to parse preview response.`);
+      }
+      if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
 
       setBackupData(parsed);
       setSummary(data.summary);
@@ -109,7 +115,6 @@ export default function BackupRestore() {
       setErrorMsg(err.message);
       setPhase('error');
     } finally {
-      // Reset file input so same file can be re-selected
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -122,13 +127,20 @@ export default function BackupRestore() {
     setErrorMsg('');
 
     try {
+      // Plain JSON body — simple and reliable
       const res = await fetch('/api/backup/restore', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ backup: backupData, options }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Restore failed');
+
+      let data: any = {};
+      try { data = await res.json(); } catch {
+        throw new Error(`Server error (${res.status}): Failed to parse response.`);
+      }
+      if (!res.ok) {
+        throw new Error(data.error || `Server error ${res.status}: Restore fail hua`);
+      }
 
       setSuccessMsg(data.message);
       setPhase('done');
@@ -161,7 +173,7 @@ export default function BackupRestore() {
           <div>
             <h3 className="text-sm font-semibold text-slate-900">Full Backup</h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Saare clients, procedures aur settings ek JSON file mein download karo
+              Download all clients, procedures and settings as a single JSON file
             </p>
           </div>
         </div>
@@ -170,8 +182,8 @@ export default function BackupRestore() {
           <div className="flex items-start gap-3 bg-blue-50 border border-blue-100 rounded-lg p-4 mb-5">
             <Info className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
             <p className="text-xs text-blue-700 leading-relaxed">
-              Backup mein shaamil hoga: Saare clients ka data, procedures (status, remarks, AI results),
-              team members list, aur AI API keys. <strong>Note:</strong> Uploaded documents (PDFs/images)
+              Backup will include: All client data, procedures (status, remarks, AI results),
+              team members list, and AI API keys. <strong>Note:</strong> Uploaded documents (PDFs/images)
               are not included in backup — only their names are saved.
             </p>
           </div>
@@ -204,7 +216,7 @@ export default function BackupRestore() {
           <div>
             <h3 className="text-sm font-semibold text-slate-900">Restore from Backup</h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Pehle preview dikhega, phir confirm karne par restore hoga
+              A preview will be shown first; restore will happen only after confirmation
             </p>
           </div>
         </div>
@@ -217,8 +229,8 @@ export default function BackupRestore() {
               <div className="flex items-start gap-3 bg-amber-50 border border-amber-100 rounded-lg p-4 mb-5">
                 <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
                 <p className="text-xs text-amber-700 leading-relaxed">
-                  <strong>Dhyan do:</strong> Restore karne se existing data overwrite ho sakta hai.
-                  Pehle ek fresh backup lena recommended hai. Only AuditFlow AI ka .json backup accept hoga.
+                  <strong>Note:</strong> Restoring may overwrite existing data and create duplicate clients.
+                  It is recommended to take a fresh backup first. Only AuditFlow AI .json backups will be accepted.
                 </p>
               </div>
 
@@ -250,7 +262,7 @@ export default function BackupRestore() {
           {phase === 'previewing' && (
             <div className="flex items-center gap-3 py-6 text-slate-500">
               <Loader2 className="h-5 w-5 animate-spin text-indigo-500" />
-              <span className="text-sm font-medium">Backup file analyze ho rahi hai...</span>
+              <span className="text-sm font-medium">Analyzing backup file...</span>
             </div>
           )}
 
@@ -316,7 +328,7 @@ export default function BackupRestore() {
 
               {/* Restore Options */}
               <div className="space-y-2">
-                <p className="text-sm font-semibold text-slate-700">Kya restore karna chahte ho?</p>
+                <p className="text-sm font-semibold text-slate-700">What would you like to restore?</p>
 
                 <label className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
                   <input
@@ -340,7 +352,7 @@ export default function BackupRestore() {
                   />
                   <div>
                     <span className="text-sm font-medium text-slate-800">Procedures & Data</span>
-                    <p className="text-xs text-slate-500">Saare procedures, status, remarks, AI results</p>
+                    <p className="text-xs text-slate-500">All procedures, status, remarks, AI results</p>
                   </div>
                 </label>
 
