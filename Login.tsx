@@ -53,7 +53,7 @@ export default function Login({ onLogin }: LoginProps) {
 
         {/* Login Card */}
         <div className="bg-white rounded-2xl shadow-xl border border-slate-100 p-8">
-          <h2 className="text-lg font-semibold text-slate-800 mb-1">Sign In</h2>
+          <h2 className="text-lg font-semibold text-slate-800 mb-1">Login</h2>
           <p className="text-sm text-slate-500 mb-6">
             Enter your app password to continue
           </p>
@@ -72,7 +72,7 @@ export default function Login({ onLogin }: LoginProps) {
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={e => setPassword(e.target.value)}
-                  placeholder="Enter password..."
+                  placeholder="Password dalein..."
                   className="w-full pl-10 pr-10 py-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 outline-none transition-all"
                   autoFocus
                 />
@@ -103,7 +103,7 @@ export default function Login({ onLogin }: LoginProps) {
               {loading ? (
                 <><Loader2 className="h-4 w-4 animate-spin" /> Logging in...</>
               ) : (
-                'Sign In →'
+                'Login →'
               )}
             </button>
           </form>
@@ -117,7 +117,7 @@ export default function Login({ onLogin }: LoginProps) {
         </div>
 
         <p className="text-center text-xs text-slate-400 mt-6">
-          Restricted to authorized CA staff only
+          This portal is for authorized CA staff only
         </p>
       </div>
     </div>

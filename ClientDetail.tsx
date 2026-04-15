@@ -65,6 +65,23 @@ function parseDocs(p: Procedure): Array<{ path: string; name: string }> {
   return [{ path: p.document_path, name: p.document_original_name || p.document_path.split('/').pop() || 'Document' }];
 }
 
+// Helper: parse source-tagged docs from custom_fields
+function parseSourceDocs(p: Procedure, source: 'client' | 'auditor'): Array<{ path: string; name: string }> {
+  try {
+    const cf = JSON.parse(p.custom_fields || '{}');
+    const key = source === 'client' ? 'client_docs' : 'auditor_docs';
+    return Array.isArray(cf[key]) ? cf[key] : [];
+  } catch { return []; }
+}
+
+// Helper: get doc_source value from custom_fields ('client' | 'auditor' | 'both')
+function getDocSource(p: Procedure): 'client' | 'auditor' | 'both' {
+  try {
+    const cf = JSON.parse(p.custom_fields || '{}');
+    return cf['doc_source'] || 'client';
+  } catch { return 'client'; }
+}
+
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
   const { role, currentUser, teamMembers } = useUser();
@@ -73,6 +90,7 @@ export default function ClientDetail() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState<string | null>(null);
   const [verifying, setVerifying] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
   const [historyModal, setHistoryModal] = useState<Procedure | null>(null);
   const [activeTab, setActiveTab] = useState('Audit Procedures');
 
@@ -141,6 +159,7 @@ export default function ClientDetail() {
       ? `/api/clients/${id}/download-all?category=${encodeURIComponent(category)}`
       : `/api/clients/${id}/download-all`;
     try {
+      setDownloading(true);
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) {
         const errText = await res.text();
@@ -159,6 +178,8 @@ export default function ClientDetail() {
       URL.revokeObjectURL(a.href);
     } catch (err) {
       alert('Download error: ' + err);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -475,26 +496,42 @@ export default function ClientDetail() {
     }
   };
 
-  const handleFileUpload = async (procId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (procId: string, e: React.ChangeEvent<HTMLInputElement>, source?: 'client' | 'auditor') => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
     const formData = new FormData();
     Array.from(files).forEach(file => formData.append('files', file));
 
+    const uploadKey = source ? `${procId}_${source}` : procId;
+
     try {
-      setUploading(procId);
-      const res = await fetch(`/api/procedures/${procId}/upload`, { method: 'POST', body: formData });
+      setUploading(uploadKey);
+      const url = source
+        ? `/api/procedures/${procId}/upload?source=${source}`
+        : `/api/procedures/${procId}/upload`;
+      const res = await fetch(url, { method: 'POST', body: formData });
       if (res.ok) {
         const data = await res.json();
-        // Build new document_path and document_original_name as JSON arrays
-        const paths = data.documents.map((d: any) => d.path);
-        const names = data.documents.map((d: any) => d.name);
-        setProcedures(prev => prev.map(p => p.id === procId ? {
-          ...p,
-          document_path: JSON.stringify(paths),
-          document_original_name: JSON.stringify(names),
-        } : p));
+        if (source) {
+          // Update custom_fields.client_docs or auditor_docs in local state
+          setProcedures(prev => prev.map(p => {
+            if (p.id !== procId) return p;
+            let cf: any = {};
+            try { cf = JSON.parse(p.custom_fields || '{}'); } catch {}
+            const key = source === 'client' ? 'client_docs' : 'auditor_docs';
+            cf[key] = data.documents;
+            return { ...p, custom_fields: JSON.stringify(cf) };
+          }));
+        } else {
+          const paths = data.documents.map((d: any) => d.path);
+          const names = data.documents.map((d: any) => d.name);
+          setProcedures(prev => prev.map(p => p.id === procId ? {
+            ...p,
+            document_path: JSON.stringify(paths),
+            document_original_name: JSON.stringify(names),
+          } : p));
+        }
       }
     } catch (error) {
       console.error('Upload error', error);
@@ -504,26 +541,36 @@ export default function ClientDetail() {
     }
   };
 
-  const handleDeleteDoc = async (procId: string, docPath: string) => {
-    if (!confirm('Is document ko delete karna chahte ho?')) return;
+  const handleDeleteDoc = async (procId: string, docPath: string, source?: 'client' | 'auditor') => {
+    if (!confirm('Are you sure you want to delete this document?')) return;
     try {
       const res = await fetch(`/api/procedures/${procId}/document`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ docPath }),
+        body: JSON.stringify({ docPath, source }),
       });
       if (res.ok) {
-        const data = await res.json();
-        // Refresh this procedure's docs from remaining
-        setProcedures(prev => prev.map(p => {
-          if (p.id !== procId) return p;
-          const docs = parseDocs(p).filter(d => d.path !== docPath);
-          return {
-            ...p,
-            document_path: docs.length ? JSON.stringify(docs.map(d => d.path)) : '',
-            document_original_name: docs.length ? JSON.stringify(docs.map(d => d.name)) : '',
-          };
-        }));
+        if (source) {
+          // Update local custom_fields
+          setProcedures(prev => prev.map(p => {
+            if (p.id !== procId) return p;
+            let cf: any = {};
+            try { cf = JSON.parse(p.custom_fields || '{}'); } catch {}
+            const key = source === 'client' ? 'client_docs' : 'auditor_docs';
+            cf[key] = (cf[key] || []).filter((d: any) => d.path !== docPath);
+            return { ...p, custom_fields: JSON.stringify(cf) };
+          }));
+        } else {
+          setProcedures(prev => prev.map(p => {
+            if (p.id !== procId) return p;
+            const docs = parseDocs(p).filter(d => d.path !== docPath);
+            return {
+              ...p,
+              document_path: docs.length ? JSON.stringify(docs.map(d => d.path)) : '',
+              document_original_name: docs.length ? JSON.stringify(docs.map(d => d.name)) : '',
+            };
+          }));
+        }
       }
     } catch (err) {
       alert('Delete failed.');
@@ -917,13 +964,27 @@ export default function ClientDetail() {
                 <div className="relative group">
                   <button
                     onClick={() => handleDownloadAll()}
-                    className="inline-flex items-center px-3 py-1.5 border border-teal-200 rounded-md shadow-sm text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition-colors"
+                    disabled={downloading}
+                    className={`inline-flex items-center px-3 py-1.5 border rounded-md shadow-sm text-xs font-medium focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition-colors ${downloading ? 'border-teal-300 bg-teal-100 text-teal-500 cursor-not-allowed' : 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'}`}
                     title="Download all uploaded documents as ZIP"
                   >
-                    <Download className="-ml-0.5 mr-1.5 h-4 w-4 text-teal-500" />
-                    Download All
+                    {downloading ? (
+                      <>
+                        <svg className="animate-spin -ml-0.5 mr-1.5 h-4 w-4 text-teal-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        Preparing ZIP...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="-ml-0.5 mr-1.5 h-4 w-4 text-teal-500" />
+                        Download All
+                      </>
+                    )}
                   </button>
                   {/* Dropdown for current tab only */}
+                  {!downloading && (
                   <div className="absolute right-0 mt-1 w-48 bg-white border border-gray-200 rounded-md shadow-lg z-50 hidden group-hover:block">
                     <button
                       onClick={() => handleDownloadAll()}
@@ -941,6 +1002,7 @@ export default function ClientDetail() {
                       Current Tab Only
                     </button>
                   </div>
+                  )}
                 </div>
               )}
               <input
@@ -1179,101 +1241,139 @@ export default function ClientDetail() {
                   )}
                 </td>
 
-                {/* Document Upload — multi-file */}
+                {/* Document Upload — smart based on doc_source */}
                 <td className="px-4 py-3 text-sm text-slate-500">
-                  <div className="flex flex-col gap-1.5 min-w-[160px]">
-                    {/* List all uploaded docs */}
-                    {parseDocs(p).map((doc, di) => {
-                      const ext = doc.path.split('.').pop()?.toLowerCase() || '';
-                      const previewable = ['pdf','png','jpg','jpeg','webp','gif'].includes(ext);
-                      const previewUrl = `/api/procedures/${p.id}/document?mode=preview&path=${encodeURIComponent(doc.path)}&t=${Date.now()}`;
-                      const downloadUrl = `/api/procedures/${p.id}/document?mode=download&path=${encodeURIComponent(doc.path)}`;
+                  {(() => {
+                    const src = getDocSource(p);
+                    const ACCEPT = ".pdf,.png,.jpg,.jpeg,.webp,.xlsx,.xls,.csv,.doc,.docx,.txt,.zip";
+
+                    // ── Reusable doc-list renderer ──
+                    const renderDocList = (docs: Array<{ path: string; name: string }>, source?: 'client' | 'auditor') => (
+                      <>
+                        {docs.map((doc, di) => {
+                          const ext = doc.path.split('.').pop()?.toLowerCase() || '';
+                          const previewable = ['pdf','png','jpg','jpeg','webp','gif'].includes(ext);
+                          const previewUrl  = `/api/procedures/${p.id}/document?mode=preview&path=${encodeURIComponent(doc.path)}&t=${Date.now()}`;
+                          const downloadUrl = `/api/procedures/${p.id}/document?mode=download&path=${encodeURIComponent(doc.path)}`;
+                          return (
+                            <div key={di} className="flex items-center gap-1 group/doc">
+                              <span className={clsx(
+                                "flex items-center truncate max-w-[100px] px-2 py-0.5 rounded text-xs font-medium",
+                                source === 'auditor' ? "text-violet-700 bg-violet-50" : "text-indigo-600 bg-indigo-50"
+                              )} title={doc.name}>
+                                <Paperclip className="h-3 w-3 mr-1 shrink-0" />
+                                <span className="truncate">{doc.name}</span>
+                              </span>
+                              <button title="Preview" onClick={() => {
+                                if (previewable) setDocPreview({ url: previewUrl, name: doc.name, type: ext });
+                                else window.location.href = downloadUrl;
+                              }} className="p-0.5 rounded text-slate-300 hover:text-indigo-600 transition-colors">
+                                <Eye className="h-3.5 w-3.5" />
+                              </button>
+                              <a href={downloadUrl} download={doc.name} title="Download" className="p-0.5 rounded text-slate-300 hover:text-emerald-600 transition-colors">
+                                <Download className="h-3.5 w-3.5" />
+                              </a>
+                              <button title="Delete" onClick={() => handleDeleteDoc(p.id, doc.path, source)} className="p-0.5 rounded text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover/doc:opacity-100">
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </>
+                    );
+
+                    // ── Reusable upload buttons ──
+                    const renderUploadBtns = (source?: 'client' | 'auditor') => {
+                      const uploadKey = source ? `${p.id}_${source}` : p.id;
+                      const colorHover = source === 'auditor' ? 'hover:text-violet-600' : 'hover:text-indigo-600';
                       return (
-                        <div key={di} className="flex items-center gap-1 group/doc">
-                          <span className="flex items-center text-indigo-600 truncate max-w-[100px] bg-indigo-50 px-2 py-0.5 rounded text-xs font-medium" title={doc.name}>
-                            <Paperclip className="h-3 w-3 mr-1 shrink-0" />
-                            <span className="truncate">{doc.name}</span>
-                          </span>
-                          {/* Preview */}
-                          <button title="Preview" onClick={() => {
-                            if (previewable) {
-                              setDocPreview({ url: previewUrl, name: doc.name, type: ext });
-                            } else {
-                              window.location.href = downloadUrl;
-                            }
-                          }} className="p-0.5 rounded text-slate-300 hover:text-indigo-600 transition-colors">
-                            <Eye className="h-3.5 w-3.5" />
-                          </button>
-                          {/* Download */}
-                          <a href={downloadUrl} download={doc.name} title="Download" className="p-0.5 rounded text-slate-300 hover:text-emerald-600 transition-colors">
-                            <Download className="h-3.5 w-3.5" />
-                          </a>
-                          {/* Delete */}
-                          <button title="Delete" onClick={() => handleDeleteDoc(p.id, doc.path)} className="p-0.5 rounded text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover/doc:opacity-100">
-                            <X className="h-3.5 w-3.5" />
-                          </button>
+                        <div className="flex items-center gap-1 mt-0.5">
+                          {uploading === uploadKey ? (
+                            <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                          ) : (
+                            <>
+                              <label title="Upload files" className={clsx("cursor-pointer p-0.5 rounded text-slate-400 transition-colors", colorHover)}>
+                                <Upload className="h-3.5 w-3.5" />
+                                <input type="file" className="hidden" multiple accept={ACCEPT}
+                                  onChange={(e) => handleFileUpload(p.id, e, source)} />
+                              </label>
+                              <label title="Upload folder" className="cursor-pointer p-0.5 rounded text-slate-400 hover:text-purple-600 transition-colors">
+                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                                </svg>
+                                <input type="file" className="hidden" multiple {...({ webkitdirectory: '' } as any)}
+                                  onChange={(e) => handleFileUpload(p.id, e, source)} />
+                              </label>
+                            </>
+                          )}
                         </div>
                       );
-                    })}
-                    {parseDocs(p).length === 0 && (
-                      <span className="text-slate-300 text-xs italic">No files</span>
-                    )}
-                    {/* Upload button — multiple + folder + ZIP */}
-                    <div className="flex items-center gap-1 mt-0.5">
-                      {uploading === p.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
-                      ) : (
-                        <>
-                          {/* Multiple files */}
-                          <label title="Upload files" className="cursor-pointer p-0.5 rounded text-slate-400 hover:text-indigo-600 transition-colors">
-                            <Upload className="h-3.5 w-3.5" />
-                            <input type="file" className="hidden" multiple
-                              accept=".pdf,.png,.jpg,.jpeg,.webp,.xlsx,.xls,.csv,.doc,.docx,.txt,.zip"
-                              onChange={(e) => handleFileUpload(p.id, e)} />
-                          </label>
-                          {/* Folder upload */}
-                          <label title="Upload folder" className="cursor-pointer p-0.5 rounded text-slate-400 hover:text-purple-600 transition-colors">
-                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
-                            </svg>
-                            <input type="file" className="hidden" multiple
-                              {...({ webkitdirectory: '' } as any)}
-                              onChange={(e) => handleFileUpload(p.id, e)} />
-                          </label>
-                        </>
-                      )}
-                    </div>
-                  </div>
+                    };
+
+                    // ── BOTH mode: two labelled sections ──
+                    if (src === 'both') {
+                      const clientDocs  = parseSourceDocs(p, 'client');
+                      const auditorDocs = parseSourceDocs(p, 'auditor');
+                      return (
+                        <div className="flex flex-col gap-2 min-w-[200px]">
+                          {/* Client raw data section */}
+                          <div className="border border-blue-100 rounded-md p-1.5 bg-blue-50/40">
+                            <div className="flex items-center gap-1 mb-1">
+                              <svg className="h-3 w-3 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-4 7a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+                              <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wide">Client Raw Data</span>
+                            </div>
+                            {clientDocs.length > 0 ? renderDocList(clientDocs, 'client') : <span className="text-slate-300 text-xs italic">No files</span>}
+                            {renderUploadBtns('client')}
+                          </div>
+                          {/* Auditor working section */}
+                          <div className="border border-violet-100 rounded-md p-1.5 bg-violet-50/40">
+                            <div className="flex items-center gap-1 mb-1">
+                              <svg className="h-3 w-3 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                              <span className="text-[10px] font-bold text-violet-600 uppercase tracking-wide">Auditor Working</span>
+                            </div>
+                            {auditorDocs.length > 0 ? renderDocList(auditorDocs, 'auditor') : <span className="text-slate-300 text-xs italic">No files</span>}
+                            {renderUploadBtns('auditor')}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // ── SINGLE mode: Client or Auditor (legacy document_path) ──
+                    const docs = parseDocs(p);
+                    return (
+                      <div className="flex flex-col gap-1.5 min-w-[160px]">
+                        {docs.length > 0 ? renderDocList(docs) : <span className="text-slate-300 text-xs italic">No files</span>}
+                        {renderUploadBtns()}
+                      </div>
+                    );
+                  })()}
                 </td>
 
-                {/* Doc Source Toggle */}
+                {/* Doc Source Toggle — 3-way: Client / Both / Auditor */}
                 {(() => {
-                  let cf: Record<string, string> = {};
-                  try { cf = JSON.parse(p.custom_fields || '{}'); } catch {}
-                  const src = cf['doc_source'] || 'client';
-                  const isClient = src === 'client';
+                  const src = getDocSource(p);
+                  const cycles: Array<'client' | 'both' | 'auditor'> = ['client', 'both', 'auditor'];
+                  const nextSrc = cycles[(cycles.indexOf(src) + 1) % cycles.length];
+                  const label = src === 'client' ? 'Client' : src === 'auditor' ? 'Auditor' : 'Both';
+                  const hint  = src === 'client'  ? '📤 Client upload karega'
+                              : src === 'auditor' ? '🔧 Auditor banayega'
+                              :                     '📤🔧 Dono upload karenge';
+                  const colorCls = src === 'client'  ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                                 : src === 'auditor' ? 'bg-violet-50 text-violet-700 border-violet-200 hover:bg-violet-100'
+                                 :                    'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100';
                   return (
                     <td className="px-4 py-3 whitespace-nowrap text-sm">
                       <div className="flex flex-col gap-1">
                         <button
-                          onClick={() => handleCustomFieldUpdate(p.id, 'doc_source', isClient ? 'auditor' : 'client')}
-                          title={isClient ? 'Currently set to Client — Switch to Auditor' : 'Currently set to Auditor — Switch to Client'}
-                          className={clsx(
-                            'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border transition-all',
-                            isClient
-                              ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
-                              : 'bg-violet-50 text-violet-700 border-violet-200 hover:bg-violet-100'
-                          )}
+                          onClick={() => handleCustomFieldUpdate(p.id, 'doc_source', nextSrc)}
+                          title={`Source: ${label} — click to cycle`}
+                          className={clsx('inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border transition-all', colorCls)}
                         >
-                          {isClient ? (
-                            <><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-4 7a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>Client</>
-                          ) : (
-                            <><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>Auditor</>
-                          )}
+                          {src === 'client' && <><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-4 7a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>Client</>}
+                          {src === 'auditor' && <><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>Auditor</>}
+                          {src === 'both' && <><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>Both</>}
                         </button>
-                        <span className="text-[9px] text-slate-400 pl-0.5">
-                          {isClient ? '📤 Client upload karega' : '🔧 Auditor banayega'}
-                        </span>
+                        <span className="text-[9px] text-slate-400 pl-0.5">{hint}</span>
                       </div>
                     </td>
                   );
@@ -1712,7 +1812,7 @@ export default function ClientDetail() {
                 <Trash2 className="h-6 w-6 text-red-600" />
               </div>
               <div>
-                <h3 className="text-lg font-semibold text-slate-900">Saare Procedures Delete Karo</h3>
+                <h3 className="text-lg font-semibold text-slate-900">Delete All Procedures</h3>
                 <p className="text-sm text-slate-500">This action cannot be undone</p>
               </div>
             </div>

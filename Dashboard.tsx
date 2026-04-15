@@ -42,9 +42,8 @@ export default function Dashboard() {
     try {
       setLoading(true);
       const res = await fetch('/api/clients');
-      if (res.status === 503 || res.status === 500 || !res.ok) { setSupabaseError(true); return; }
+      if (res.status === 503) { setSupabaseError(true); return; }
       const data = await res.json();
-      if (!Array.isArray(data)) { setSupabaseError(true); return; }
       setClients(data);
       setSupabaseError(false);
       data.forEach((c: Client) => fetchClientStats(c.id));
@@ -92,7 +91,7 @@ export default function Dashboard() {
 
   const handleDeleteClient = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
-    if (!confirm('Is client ko delete karna chahte ho? Saare procedures bhi delete ho jayenge.')) return;
+    if (!confirm('Are you sure you want to delete this client? All associated procedures will also be deleted.')) return;
     try {
       await fetch(`/api/clients/${id}`, { method: 'DELETE' });
       fetchClients();
@@ -139,7 +138,7 @@ export default function Dashboard() {
           <h2 className="text-xl font-bold text-red-800 mb-2">Supabase Connected Nahi Hai</h2>
           <p className="text-red-600 text-sm mb-5">Supabase setup is required to use this app.</p>
           <Link to="/settings" className="inline-flex items-center px-5 py-2.5 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors">
-            Settings mein jao →
+            Go to Settings →
           </Link>
         </div>
       </div>
@@ -210,7 +209,7 @@ export default function Dashboard() {
           <p className="font-medium text-slate-500">{search ? 'No clients found' : 'No clients added yet'}</p>
           {!search && role === 'Manager' && (
             <button onClick={() => setShowAddModal(true)} className="mt-3 text-indigo-600 text-sm font-medium hover:underline">
-              + Pehla client add karo
+              + Add First Client
             </button>
           )}
         </div>
